@@ -555,7 +555,7 @@ namespace RPTCarrier
             FormClosing += OnCarrierClosing;
 
             _logPath = ResolveLogPath();
-            Log("RPT Carrier 1.4 starting");
+            Log("RPT Carrier 1.4.2 starting");
             Log("Config: " + (_config.ConfigPath.Length == 0 ? "(command line/defaults)" : _config.ConfigPath));
             LogEnvironment();
         }
@@ -1326,19 +1326,19 @@ namespace RPTCarrier
 
         private string BuildNwOverlayArguments(string path)
         {
-            // Order matters for NW.js. Keep custom-titlebar first.
+            // Steam Overlay on NW.js commonly needs the legacy in-process GPU path.
+            // Keep the custom titlebar switch first because NW.js/Chromium can be
+            // sensitive to its position relative to DirectComposition switches.
             var parts = new List<string>();
             parts.Add("--disable-windows10-custom-titlebar");
 
-            // Chromium normally runs the Windows audio service in a separate
-            // utility process. Steam Remote Play can capture the NW.js video
-            // and input while missing that separate audio session, so keep
-            // audio in the NW browser process for streaming compatibility.
+            // Keep Chromium audio in the NW browser process so Steam Remote Play
+            // can capture it together with the streamed game.
             parts.Add("--disable-features=AudioServiceOutOfProcess");
             Log("NW audio compatibility: forcing Chromium audio service in-process.");
 
-            int minor = -1;
             int major = -1;
+            int minor = -1;
 
             try
             {
@@ -1352,11 +1352,11 @@ namespace RPTCarrier
                 Log("Could not read NW.js version: " + ex.Message);
             }
 
-            bool safeForInProcessGpu =
+            bool useInProcessGpu =
                 _config.ForceNwInProcessGpu ||
                 (major == 0 && minor >= 0 && minor < 102);
 
-            if (safeForInProcessGpu)
+            if (useInProcessGpu)
             {
                 parts.Add("--in-process-gpu");
                 parts.Add("--disable-direct-composition");
@@ -1368,7 +1368,7 @@ namespace RPTCarrier
 
                 if (major == 0 && minor >= 102 && !_config.ForceNwInProcessGpu)
                 {
-                    Log("NW.js 0.102+ detected. --in-process-gpu skipped because it is known to cause blank windows on recent NW.js.");
+                    Log("NW.js 0.102+ detected. --in-process-gpu skipped because recent NW.js can blank the window with that flag.");
                 }
                 else
                 {
@@ -1531,6 +1531,16 @@ namespace RPTCarrier
             Native.SetForegroundWindow(_gameWindow);
             _gameHasInputFocus = true;
 
+            // Stop presenting the Carrier OpenGL surface before hiding it.
+            // Leaving SwapBuffers running at ~60 Hz after handoff can make Steam
+            // alternate capture between the hidden Carrier surface and the real
+            // NW.js game window, which appears as rapid flicker on the receiver.
+            if (_renderTimer.Enabled)
+            {
+                _renderTimer.Stop();
+                Log("Carrier render loop stopped for handoff.");
+            }
+
             // Carrier has already served its purpose: establish the Steam/RPT
             // context before the target starts. Keep the process alive, but get
             // its window completely out of the way so the game remains the
@@ -1538,7 +1548,7 @@ namespace RPTCarrier
             ShowInTaskbar = false;
             Hide();
 
-            Log("Handoff mode active. Carrier window hidden; target remains native top-level foreground window.");
+            Log("Handoff mode active. Carrier rendering stopped and window hidden; target remains native top-level foreground window.");
         }
 
         private void SetupDwmMirror()
